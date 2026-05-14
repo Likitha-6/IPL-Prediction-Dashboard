@@ -26,7 +26,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
-
+!data/IPL_FINAL.csv
+!data/IPL.csv
 # PyInstaller
 *.manifest
 *.spec
