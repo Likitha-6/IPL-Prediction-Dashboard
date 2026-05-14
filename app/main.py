@@ -12,6 +12,11 @@ import joblib
 import warnings
 warnings.filterwarnings('ignore')
 
+from src.chasing_analyzer import ChasingDifficultyAnalyzer
+
+analyzer = ChasingDifficultyAnalyzer(df)
+difficulty = analyzer.calculate_dynamic_thresholds(chasing_team, target_runs)
+
 class ImprovedIPLPredictor:
     """Advanced IPL match prediction with player-level features"""
     
