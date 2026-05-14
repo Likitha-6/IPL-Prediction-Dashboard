@@ -181,6 +181,59 @@ class IPLAnalyzer:
         
         return venues.sort_values('total_matches', ascending=False).head(15)
     
+    def get_venue_characteristics(self, venue):
+        """Analyze venue characteristics"""
+        
+        venue_matches = self.df[self.df['venue'] == venue]
+        
+        if len(venue_matches) == 0:
+            return {
+                'venue_name': venue,
+                'total_matches': 0,
+                'avg_score': 170,
+                'highest_score': 0,
+                'lowest_score': 0,
+                'batting_friendly': 'Moderate',
+                'winning_team_avg_score': 170
+            }
+        
+        total_matches = venue_matches['match_id'].nunique()
+        avg_score = venue_matches.groupby('match_id')['runs_total'].max().mean()
+        highest_score = venue_matches.groupby('match_id')['runs_total'].max().max()
+        lowest_score = venue_matches.groupby('match_id')['runs_total'].max().min()
+        
+        # Determine if venue is batting or bowling friendly
+        if avg_score > 180:
+            batting_friendly = "Very Batting Friendly"
+        elif avg_score > 165:
+            batting_friendly = "Batting Friendly"
+        elif avg_score > 150:
+            batting_friendly = "Moderate"
+        else:
+            batting_friendly = "Bowling Friendly"
+        
+        # Average score of winning teams
+        winning_matches = venue_matches.drop_duplicates('match_id')
+        winning_scores = []
+        for _, match in winning_matches.iterrows():
+            winner = match['match_won_by']
+            winner_score = venue_matches[(venue_matches['match_id'] == match['match_id']) & 
+                                        (venue_matches['batting_team'] == winner)]['runs_total'].max()
+            if winner_score > 0:
+                winning_scores.append(winner_score)
+        
+        winning_team_avg_score = np.mean(winning_scores) if winning_scores else avg_score
+        
+        return {
+            'venue_name': venue,
+            'total_matches': total_matches,
+            'avg_score': avg_score,
+            'highest_score': highest_score,
+            'lowest_score': lowest_score,
+            'batting_friendly': batting_friendly,
+            'winning_team_avg_score': winning_team_avg_score
+        }
+    
     def get_2026_season_data(self):
         """Get current season (2026) detailed data"""
         logger.info("Analyzing IPL 2026 season...")
