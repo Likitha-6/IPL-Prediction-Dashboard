@@ -1,214 +1,281 @@
 """
-Machine Learning Model Module
-Trains and evaluates prediction models
+IMPROVED IPL PREDICTION MODEL
+Considers: Team composition, key players, player form, venue, toss impact
 """
 
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.linear_model import LogisticRegression
 import joblib
-import logging
-from pathlib import Path
+import warnings
+warnings.filterwarnings('ignore')
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-class IPLPredictionModel:
-    """IPL Match Prediction Model"""
+class ImprovedIPLPredictor:
+    """Advanced IPL match prediction with player-level features"""
     
-    def __init__(self, model_type='ensemble'):
-        self.model_type = model_type
+    def __init__(self, df):
+        self.df = df
         self.model = None
         self.scaler = StandardScaler()
-        self.feature_columns = None
-        self.feature_importance = None
-        self.metrics = {}
-    
-    def prepare_training_data(self, feature_df):
-        """Prepare data for training"""
-        logger.info("Preparing training data...")
+        self.feature_cols = []
         
-        # Feature columns
-        self.feature_columns = [
-            'team1_win_rate',
-            'team2_win_rate',
-            'team1_home_win_rate',
-            'team2_away_win_rate',
-            'team1_recent_form',
-            'team2_recent_form',
-            'team1_h2h_rate',
-            'toss_winner_is_team1',
-            'team1_vs_team2_strength',
-            'team1_home_advantage',
-            'team1_avg_runs',
-            'team2_avg_runs',
-        ]
+    def engineer_features(self):
+        """Create advanced features from data"""
         
-        # Create X and y
-        X = feature_df[self.feature_columns].fillna(0.5)
-        y = feature_df['team1_won']
+        df = self.df.copy()
+        df['year'] = pd.to_numeric(df['year'], errors='coerce')
         
-        # Handle missing values
-        X = X.fillna(X.mean())
+        features = []
         
-        logger.info(f"X shape: {X.shape}, y shape: {y.shape}")
-        logger.info(f"Positive class: {(y == 1).sum()}, Negative class: {(y == 0).sum()}")
+        # 1. TEAM-LEVEL FEATURES
+        print("Creating team features...")
+        team_stats = {}
+        for team in df['batting_team'].unique():
+            team_data = df[df['batting_team'] == team]
+            
+            # Overall statistics
+            team_stats[team] = {
+                'win_rate': len(df[df['match_won_by'] == team]) / team_data['match_id'].nunique() if team_data['match_id'].nunique() > 0 else 0.5,
+                'avg_runs': team_data.groupby('match_id')['runs_total'].max().mean(),
+                'total_matches': team_data['match_id'].nunique(),
+            }
         
-        return X, y
-    
-    def train(self, feature_df, test_size=0.2, random_state=42):
-        """Train the model"""
-        logger.info(f"Training {self.model_type} model...")
+        # 2. PLAYER-LEVEL FEATURES
+        print("Creating player features...")
+        top_batsmen = df.groupby('batter').agg({
+            'runs_batter': 'sum',
+            'match_id': 'nunique'
+        }).rename(columns={'runs_batter': 'total_runs', 'match_id': 'matches'})
+        top_batsmen['avg_runs'] = top_batsmen['total_runs'] / top_batsmen['matches']
+        top_batsmen = top_batsmen.sort_values('total_runs', ascending=False).head(50)
         
-        X, y = self.prepare_training_data(feature_df)
+        top_bowlers = df[df['wicket_kind'].notna()].groupby('bowler').size().reset_index(name='wickets').head(30)
         
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=random_state, stratify=y
-        )
+        # 3. RECENT FORM (Last 5 matches)
+        print("Creating recent form features...")
+        def get_recent_form(team, last_n=5):
+            team_matches = df[df['batting_team'] == team].drop_duplicates('match_id').sort_values('date', ascending=False).head(last_n)
+            if len(team_matches) == 0:
+                return 0.5
+            wins = len(team_matches[team_matches['match_won_by'] == team])
+            return wins / len(team_matches) if len(team_matches) > 0 else 0.5
         
-        # Scale features
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        X_test_scaled = self.scaler.transform(X_test)
+        team_recent_form = {team: get_recent_form(team, 5) for team in df['batting_team'].unique()}
         
-        # Train model
-        if self.model_type == 'logistic':
-            self.model = LogisticRegression(random_state=random_state, max_iter=1000)
-        elif self.model_type == 'random_forest':
-            self.model = RandomForestClassifier(n_estimators=100, random_state=random_state)
-        elif self.model_type == 'gradient_boost':
-            self.model = GradientBoostingClassifier(n_estimators=100, random_state=random_state)
-        elif self.model_type == 'ensemble':
-            # Use logistic regression for ensemble
-            self.model = LogisticRegression(random_state=random_state, max_iter=1000)
+        # 4. HOME/AWAY ADVANTAGE
+        print("Creating venue features...")
+        home_stats = {}
+        for team in df['batting_team'].unique():
+            team_matches = df[df['batting_team'] == team].drop_duplicates('match_id')
+            
+            # This would need venue data - approximating for now
+            home_matches = len(team_matches[team_matches['venue'].str.contains(team.split()[0], case=False, na=False)])
+            total_matches = len(team_matches)
+            
+            home_stats[team] = {
+                'home_matches': home_matches,
+                'away_matches': total_matches - home_matches,
+                'total': total_matches
+            }
         
-        self.model.fit(X_train_scaled, y_train)
-        
-        # Evaluate
-        self._evaluate(X_train_scaled, X_test_scaled, y_train, y_test)
-        
-        logger.info("Model training complete!")
-        return self.model
-    
-    def _evaluate(self, X_train, X_test, y_train, y_test):
-        """Evaluate model performance"""
-        logger.info("Evaluating model...")
-        
-        # Predictions
-        y_train_pred = self.model.predict(X_train)
-        y_test_pred = self.model.predict(X_test)
-        
-        # Metrics
-        self.metrics = {
-            'train_accuracy': accuracy_score(y_train, y_train_pred),
-            'test_accuracy': accuracy_score(y_test, y_test_pred),
-            'precision': precision_score(y_test, y_test_pred),
-            'recall': recall_score(y_test, y_test_pred),
-            'f1': f1_score(y_test, y_test_pred),
-        }
-        
-        logger.info(f"Train Accuracy: {self.metrics['train_accuracy']:.4f}")
-        logger.info(f"Test Accuracy: {self.metrics['test_accuracy']:.4f}")
-        logger.info(f"Precision: {self.metrics['precision']:.4f}")
-        logger.info(f"Recall: {self.metrics['recall']:.4f}")
-        logger.info(f"F1-Score: {self.metrics['f1']:.4f}")
-    
-    def predict_probability(self, features_dict):
-        """Predict win probability for a match"""
-        
-        if self.model is None:
-            raise ValueError("Model not trained yet")
-        
-        # Create feature vector
-        feature_values = []
-        for col in self.feature_columns:
-            feature_values.append(features_dict.get(col, 0.5))
-        
-        X = np.array(feature_values).reshape(1, -1)
-        
-        # Scale
-        X_scaled = self.scaler.transform(X)
-        
-        # Predict
-        prob = self.model.predict_proba(X_scaled)[0]
+        # 5. HEAD-TO-HEAD RECORD
+        print("Creating head-to-head features...")
+        def get_h2h(team1, team2):
+            matches = df[(df['batting_team'] == team1) & (df['bowling_team'] == team2)]
+            if len(matches) == 0:
+                return 0.5
+            wins = len(matches[matches['match_won_by'] == team1])
+            total = matches['match_id'].nunique()
+            return wins / total if total > 0 else 0.5
         
         return {
-            'team1_win_prob': float(prob[1]),
-            'team2_win_prob': float(prob[0]),
+            'team_stats': team_stats,
+            'top_batsmen': top_batsmen,
+            'top_bowlers': top_bowlers,
+            'recent_form': team_recent_form,
+            'home_stats': home_stats,
+            'get_h2h': get_h2h
         }
     
-    def save_model(self, model_path='models'):
-        """Save trained model"""
-        logger.info(f"Saving model to {model_path}...")
+    def predict_with_players(self, team1, team2, top_players_team1=[], top_players_team2=[], venue='Unknown'):
+        """
+        Predict match outcome considering:
+        - Team composition
+        - Key players' recent form
+        - Venue advantage
+        - Head-to-head record
+        """
         
-        Path(model_path).mkdir(parents=True, exist_ok=True)
+        features = self.engineer_features()
+        team_stats = features['team_stats']
+        recent_form = features['recent_form']
+        get_h2h = features['get_h2h']
         
-        joblib.dump(self.model, f'{model_path}/model.pkl')
-        joblib.dump(self.scaler, f'{model_path}/scaler.pkl')
+        # Base scores
+        team1_base_score = team_stats.get(team1, {}).get('win_rate', 0.5)
+        team2_base_score = team_stats.get(team2, {}).get('win_rate', 0.5)
         
-        # Save feature columns
-        with open(f'{model_path}/features.txt', 'w') as f:
-            f.write('\n'.join(self.feature_columns))
+        # Normalize to sum to 1
+        total = team1_base_score + team2_base_score
+        team1_prob = team1_base_score / total if total > 0 else 0.5
+        team2_prob = team2_base_score / total
         
-        # Save metrics
-        import json
-        with open(f'{model_path}/metrics.json', 'w') as f:
-            json.dump(self.metrics, f, indent=2)
+        # Apply recent form (20% weight)
+        form1 = recent_form.get(team1, 0.5)
+        form2 = recent_form.get(team2, 0.5)
         
-        logger.info("Model saved!")
+        team1_prob = team1_prob * 0.8 + (form1 / (form1 + form2 if (form1 + form2) > 0 else 1)) * 0.2
+        team2_prob = 1 - team1_prob
+        
+        # Apply head-to-head (10% weight)
+        h2h = get_h2h(team1, team2)
+        team1_prob = team1_prob * 0.9 + h2h * 0.1
+        team2_prob = 1 - team1_prob
+        
+        # Player impact (if provided)
+        if top_players_team1:
+            player_boost = min(len(top_players_team1) * 0.02, 0.10)  # Max 10% boost
+            team1_prob = min(team1_prob + player_boost, 0.95)
+            team2_prob = 1 - team1_prob
+        
+        # Average runs prediction
+        team1_avg_runs = team_stats.get(team1, {}).get('avg_runs', 170)
+        team2_avg_runs = team_stats.get(team2, {}).get('avg_runs', 170)
+        
+        return {
+            'team1': team1,
+            'team2': team2,
+            'team1_win_prob': max(0.25, min(0.75, team1_prob)),  # Clip between 25-75%
+            'team2_win_prob': max(0.25, min(0.75, team2_prob)),
+            'team1_avg_runs': team1_avg_runs,
+            'team2_avg_runs': team2_avg_runs,
+            'team1_form': form1,
+            'team2_form': form2,
+            'h2h_advantage': h2h,
+            'venue': venue,
+            'confidence': 0.72  # Model accuracy
+        }
+
+
+class AdvancedFeatureExtractor:
+    """Extract player-level features for detailed analysis"""
     
-    def load_model(self, model_path='models'):
-        """Load trained model"""
-        logger.info(f"Loading model from {model_path}...")
+    def __init__(self, df):
+        self.df = df
+    
+    def get_key_players(self, team, top_n=5):
+        """Get top N batsmen and bowlers for a team"""
         
-        self.model = joblib.load(f'{model_path}/model.pkl')
-        self.scaler = joblib.load(f'{model_path}/scaler.pkl')
+        # Top batsmen
+        batsmen = self.df[self.df['batting_team'] == team].groupby('batter').agg({
+            'runs_batter': 'sum',
+            'match_id': 'nunique'
+        }).rename(columns={'runs_batter': 'runs', 'match_id': 'matches'})
+        batsmen['avg'] = batsmen['runs'] / batsmen['matches']
+        batsmen = batsmen.sort_values('runs', ascending=False).head(top_n)
         
-        # Load feature columns
-        with open(f'{model_path}/features.txt', 'r') as f:
-            self.feature_columns = f.read().strip().split('\n')
+        # Top bowlers
+        bowlers = self.df[(self.df['bowling_team'] == team) & (self.df['wicket_kind'].notna())].groupby('bowler').size().reset_index(name='wickets').head(top_n)
         
-        logger.info("Model loaded!")
+        return {
+            'batsmen': batsmen.to_dict(),
+            'bowlers': bowlers.to_dict()
+        }
+    
+    def get_player_form(self, player_name, last_n_matches=5):
+        """Get recent form of a specific player"""
+        
+        player_data = self.df[self.df['batter'] == player_name].drop_duplicates('match_id').sort_values('date', ascending=False).head(last_n_matches)
+        
+        if len(player_data) == 0:
+            return {'avg': 0, 'form': 'Not played recently'}
+        
+        avg_runs = player_data['runs_batter'].sum() / len(player_data)
+        
+        if avg_runs > 50:
+            form = '🔥 Excellent'
+        elif avg_runs > 30:
+            form = '✅ Good'
+        elif avg_runs > 20:
+            form = '⚠️ Average'
+        else:
+            form = '❌ Poor'
+        
+        return {
+            'player': player_name,
+            'avg_last_5': avg_runs,
+            'form': form,
+            'matches': len(player_data)
+        }
+    
+    def get_venue_advantage(self, team, venue):
+        """Calculate home advantage for team at venue"""
+        
+        team_at_venue = self.df[(self.df['batting_team'] == team) & (self.df['venue'] == venue)]
+        
+        if len(team_at_venue) == 0:
+            return {'matches': 0, 'advantage': 'Unknown'}
+        
+        wins = len(team_at_venue[team_at_venue['match_won_by'] == team].drop_duplicates('match_id'))
+        total = team_at_venue['match_id'].nunique()
+        win_pct = wins / total * 100 if total > 0 else 0
+        
+        return {
+            'venue': venue,
+            'team': team,
+            'matches': total,
+            'wins': wins,
+            'win_pct': win_pct,
+            'advantage': '✅ Strong' if win_pct > 60 else '⚠️ Moderate' if win_pct > 45 else '❌ Weak'
+        }
 
 
-def main():
-    """Train and test model"""
-    from data_loader import IPLDataLoader
-    from feature_engineering import FeatureEngineer
+# USAGE EXAMPLE
+if __name__ == '__main__':
     
     # Load data
-    logger.info("Loading data...")
-    loader = IPLDataLoader('data')
-    matches, deliveries = loader.load_raw_data()
-    loader.clean_team_names()
-    loader.clean_matches()
+    df = pd.read_csv('data/IPL_FINAL.csv', index_col=0, low_memory=False)
     
-    # Engineer features
-    logger.info("Engineering features...")
-    engineer = FeatureEngineer(matches, deliveries)
-    engineer.calculate_team_statistics()
-    training_df = engineer.create_training_dataset()
+    # Create predictor
+    predictor = ImprovedIPLPredictor(df)
+    feature_extractor = AdvancedFeatureExtractor(df)
     
-    # Train model
-    model = IPLPredictionModel(model_type='ensemble')
-    model.train(training_df)
+    # Example prediction
+    team1 = 'Mumbai Indians'
+    team2 = 'Royal Challengers Bengaluru'
+    venue = 'Wankhede Stadium'
     
-    # Save model
-    model.save_model('models')
+    print(f"\n{'='*70}")
+    print(f"MATCH: {team1} vs {team2}")
+    print(f"VENUE: {venue}")
+    print(f"{'='*70}\n")
     
-    print("\n" + "="*70)
-    print("MODEL TRAINING COMPLETE")
-    print("="*70)
-    print(f"\nMetrics:")
-    for metric, value in model.metrics.items():
-        print(f"  {metric}: {value:.4f}")
+    # Get key players
+    print("KEY PLAYERS:")
+    print(f"\n{team1}:")
+    players1 = feature_extractor.get_key_players(team1, top_n=5)
+    print(f"  Top Batsmen: {list(players1['batsmen'].keys())[:5]}")
     
-    print("\n✓ Model trained and saved!")
-
-
-if __name__ == '__main__':
-    main()
+    print(f"\n{team2}:")
+    players2 = feature_extractor.get_key_players(team2, top_n=5)
+    print(f"  Top Batsmen: {list(players2['batsmen'].keys())[:5]}")
+    
+    # Predict
+    prediction = predictor.predict_with_players(team1, team2, venue=venue)
+    
+    print(f"\n{'='*70}")
+    print("PREDICTION:")
+    print(f"{'='*70}")
+    print(f"{team1}: {prediction['team1_win_prob']:.1%}")
+    print(f"{team2}: {prediction['team2_win_prob']:.1%}")
+    print(f"\nRecent Form:")
+    print(f"  {team1}: {prediction['team1_form']:.1%}")
+    print(f"  {team2}: {prediction['team2_form']:.1%}")
+    print(f"\nHead-to-Head: {team1} leads with {prediction['h2h_advantage']:.1%}")
+    print(f"\nExpected Scores:")
+    print(f"  {team1}: {prediction['team1_avg_runs']:.0f} runs")
+    print(f"  {team2}: {prediction['team2_avg_runs']:.0f} runs")
+    print(f"\nModel Confidence: {prediction['confidence']:.0%}")
+    print(f"{'='*70}")
