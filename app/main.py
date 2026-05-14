@@ -12,7 +12,7 @@ import joblib
 import warnings
 warnings.filterwarnings('ignore')
 
-from src.chasing_analyzer import ChasingDifficultyAnalyzer
+from src.chasing_analyzer import ChasingDifficultyAnalyzer, display_personalized_difficulty
 
 analyzer = ChasingDifficultyAnalyzer(df)
 difficulty = analyzer.calculate_dynamic_thresholds(chasing_team, target_runs)
